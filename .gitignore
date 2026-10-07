@@ -1,0 +1,21 @@
+# 本机环境、凭据及运行数据
+.venv/
+.env
+.env.*
+config/配置.ini
+runtime/*
+!runtime/README.md
+__pycache__/
+*.py[cod]
+*.log
+build/
+dist/
+
+# 测试、构建与编辑器临时文件
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.sqlite3.building
+*.tmp
+*.swp

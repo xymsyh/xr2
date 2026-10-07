@@ -1,0 +1,101 @@
+import ast
+from pathlib import Path
+import re
+import tempfile
+import unittest
+
+from xiaoxiao_reader.config import 初始化配置, 读取配置
+
+
+ROOT = Path(__file__).resolve().parents[1]
+TEMPLATE = (ROOT / "config" / "配置示例.ini").read_text(encoding="utf-8")
+
+
+class ConfigTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.path = Path(self.directory.name) / "配置.ini"
+
+    def write(self, content):
+        self.path.write_text(content, encoding="utf-8-sig")
+
+    def test_initialization_never_overwrites_user_config(self):
+        self.assertTrue(初始化配置(self.path))
+        self.write(TEMPLATE.replace("f8", "f18"))
+        self.assertFalse(初始化配置(self.path))
+        self.assertEqual(读取配置(self.path)["按键映射"]["拖选朗读"], "f18")
+
+    def test_blank_key_and_custom_keys(self):
+        self.write(TEMPLATE.replace("f8", "F18").replace("f9", "f19").replace("f10", "f20"))
+        result = 读取配置(self.path)
+        self.assertEqual(list(result["按键映射"].values()), ["f18", "f19", "f20"])
+        self.assertEqual(result["微软翻译API"]["密钥"], "")
+        self.assertFalse(result["音频发送"]["启用"])
+
+    def test_audio_forwarding_configuration(self):
+        self.write(TEMPLATE.replace("启用 = false", "启用 = true"))
+        result = 读取配置(self.path)
+        self.assertTrue(result["音频发送"]["启用"])
+        self.assertEqual(result["音频发送"]["地址"], "https://audio.vui.ink/api/play")
+
+    def test_legacy_configuration_defaults_audio_forwarding_to_disabled(self):
+        self.write(TEMPLATE.split("\n[音频发送]", 1)[0])
+        result = 读取配置(self.path)
+        self.assertFalse(result["音频发送"]["启用"])
+        self.assertEqual(result["音频发送"]["地址"], "")
+
+    def test_literal_secret_characters(self):
+        self.write(TEMPLATE.replace("密钥 =", "密钥 = test%value#not-a-real-secret"))
+        self.assertEqual(读取配置(self.path)["微软翻译API"]["密钥"], "test%value#not-a-real-secret")
+
+    def test_invalid_configs(self):
+        for content in (
+            TEMPLATE.replace("f9", "f8"),
+            TEMPLATE.replace("f8", "ctrl+f8"),
+            TEMPLATE.replace("区域 = eastasia", "区域 ="),
+            TEMPLATE.replace("https://api.cognitive.microsofttranslator.com/translate", "invalid"),
+            TEMPLATE.replace("启用 = false", "启用 = maybe"),
+            TEMPLATE.replace("启用 = false", "启用 = true").replace(
+                "https://audio.vui.ink/api/play", "invalid"
+            ),
+            "[broken",
+        ):
+            with self.subTest(content=content):
+                self.write(content)
+                with self.assertRaises(ValueError):
+                    读取配置(self.path)
+
+    def test_missing_config(self):
+        with self.assertRaisesRegex(ValueError, "找不到配置文件"):
+            读取配置(self.path)
+
+
+class TextTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # 只加载纯文本函数，避免测试时注册全局按键、打开音频设备或联网。
+        tree = ast.parse((ROOT / "xiaoxiao_reader" / "text.py").read_text(encoding="utf-8-sig"))
+        names = {"含中文", "是否是代码", "拆分驼峰", "预处理翻译文本"}
+        selected = [node for node in tree.body if
+                    (isinstance(node, ast.FunctionDef) and node.name in names) or
+                    (isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                     and node.targets[0].id in {"_代码关键词", "_代码符号"})]
+        cls.functions = {"re": re}
+        exec(compile(ast.Module(body=selected, type_ignores=[]), "text-functions", "exec"), cls.functions)
+
+    def test_normal_english_is_not_code(self):
+        self.assertFalse(self.functions["是否是代码"]("This is a useful tool for reading."))
+
+    def test_code_and_chinese_detection(self):
+        self.assertTrue(self.functions["是否是代码"]("def hello():\n    return True"))
+        self.assertTrue(self.functions["含中文"]("hello 世界"))
+        self.assertFalse(self.functions["含中文"]("hello"))
+
+    def test_identifier_preprocessing(self):
+        self.assertEqual(self.functions["预处理翻译文本"]("WindowsSelectorEventLoopPolicy_test"),
+                         "Windows Selector Event Loop Policy test")
+
+
+if __name__ == "__main__":
+    unittest.main()
